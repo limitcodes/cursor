@@ -1,13 +1,18 @@
 import { app, shell, BrowserWindow, ipcMain } from 'electron'
 import { join } from 'path'
+import os from 'os'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
+import pty from 'node-pty'
+
+const terminals = new Map<string, pty.IPty>()
 
 function createWindow(): void {
-  // Create the browser window.
   const mainWindow = new BrowserWindow({
-    width: 900,
-    height: 670,
+    width: 1400,
+    height: 900,
+    minWidth: 980,
+    minHeight: 640,
     show: false,
     autoHideMenuBar: true,
     ...(process.platform === 'linux' ? { icon } : {}),
@@ -26,8 +31,6 @@ function createWindow(): void {
     return { action: 'deny' }
   })
 
-  // HMR for renderer base on electron-vite cli.
-  // Load the remote URL for development or the local html file for production.
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
@@ -35,40 +38,71 @@ function createWindow(): void {
   }
 }
 
-// This method will be called when Electron has finished
-// initialization and is ready to create browser windows.
-// Some APIs can only be used after this event occurs.
+function registerTerminalIpc(): void {
+  ipcMain.handle('terminal:create', (event, options?: { cols?: number; rows?: number; cwd?: string }) => {
+    const id = crypto.randomUUID()
+    const shellPath = process.env.SHELL || (process.platform === 'win32' ? 'powershell.exe' : 'zsh')
+    const term = pty.spawn(shellPath, [], {
+      name: 'xterm-256color',
+      cols: options?.cols ?? 120,
+      rows: options?.rows ?? 32,
+      cwd: options?.cwd || process.cwd(),
+      env: { ...process.env, TERM: 'xterm-256color' }
+    })
+
+    terminals.set(id, term)
+
+    term.onData((data) => {
+      if (!event.sender.isDestroyed()) {
+        event.sender.send('terminal:data', { id, data })
+      }
+    })
+
+    term.onExit(({ exitCode }) => {
+      terminals.delete(id)
+      if (!event.sender.isDestroyed()) {
+        event.sender.send('terminal:exit', { id, exitCode })
+      }
+    })
+
+    return { id, cwd: options?.cwd || process.cwd(), title: os.userInfo().username }
+  })
+
+  ipcMain.on('terminal:write', (_event, payload: { id: string; data: string }) => {
+    terminals.get(payload.id)?.write(payload.data)
+  })
+
+  ipcMain.on('terminal:resize', (_event, payload: { id: string; cols: number; rows: number }) => {
+    terminals.get(payload.id)?.resize(Math.max(2, payload.cols), Math.max(1, payload.rows))
+  })
+
+  ipcMain.on('terminal:dispose', (_event, id: string) => {
+    const term = terminals.get(id)
+    terminals.delete(id)
+    term?.kill()
+  })
+}
+
 app.whenReady().then(() => {
-  // Set app user model id for windows
   electronApp.setAppUserModelId('com.electron')
 
-  // Default open or close DevTools by F12 in development
-  // and ignore CommandOrControl + R in production.
-  // see https://github.com/alex8088/electron-toolkit/tree/master/packages/utils
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  // IPC test
-  ipcMain.on('ping', () => console.log('pong'))
-
+  registerTerminalIpc()
   createWindow()
 
   app.on('activate', function () {
-    // On macOS it's common to re-create a window in the app when the
-    // dock icon is clicked and there are no other windows open.
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
 })
 
-// Quit when all windows are closed, except on macOS. There, it's common
-// for applications and their menu bar to stay active until the user quits
-// explicitly with Cmd + Q.
 app.on('window-all-closed', () => {
+  for (const term of terminals.values()) term.kill()
+  terminals.clear()
+
   if (process.platform !== 'darwin') {
     app.quit()
   }
 })
-
-// In this file you can include the rest of your app's specific main process
-// code. You can also put them in separate files and require them here.
