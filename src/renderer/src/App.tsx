@@ -5,6 +5,7 @@ import {
   useEffect,
   useEffectEvent,
   useMemo,
+  useReducer,
   useRef,
   useState
 } from 'react'
@@ -15,6 +16,7 @@ import {
   CaretDownIcon,
   CaretRightIcon,
   FileIcon,
+  FolderOpenIcon,
   GitDiffIcon,
   PlusIcon,
   TerminalIcon,
@@ -115,6 +117,98 @@ type HighlightedToken = {
   fontStyle?: number
 }
 
+type ViewState = {
+  mode: AppMode
+  filePaths: string[]
+  filesLoading: boolean
+  filesTruncated: boolean
+  fileGitStatus: GitStatusEntry[]
+  reviewItems: CodeViewItem[]
+  reviewLoading: boolean
+  selectedPath: string | null
+  selectedFile: FileReadResult | null
+  workspaceRoot: string
+}
+
+type ViewAction =
+  | { type: 'setMode'; mode: AppMode }
+  | { type: 'setWorkspace'; root: string; version?: number }
+  | { type: 'filesLoading'; loading: boolean }
+  | {
+      type: 'filesLoaded'
+      root: string
+      paths: string[] | null
+      gitStatus: GitStatusEntry[]
+      truncated: boolean
+    }
+  | { type: 'reviewLoading'; loading: boolean }
+  | { type: 'reviewLoaded'; items: CodeViewItem[] }
+  | { type: 'toggleReviewItem'; id: string }
+  | { type: 'selectFile'; path: string }
+  | { type: 'fileLoaded'; file: FileReadResult }
+
+const initialViewState: ViewState = {
+  mode: 'terminal',
+  filePaths: [],
+  filesLoading: false,
+  filesTruncated: false,
+  fileGitStatus: [],
+  reviewItems: [],
+  reviewLoading: false,
+  selectedPath: null,
+  selectedFile: null,
+  workspaceRoot: ''
+}
+
+function viewReducer(state: ViewState, action: ViewAction): ViewState {
+  switch (action.type) {
+    case 'setMode':
+      return { ...state, mode: action.mode }
+    case 'setWorkspace':
+      return {
+        ...state,
+        mode: 'terminal',
+        workspaceRoot: action.root,
+        filePaths: [],
+        filesLoading: false,
+        filesTruncated: false,
+        fileGitStatus: [],
+        reviewItems: [],
+        reviewLoading: false,
+        selectedPath: null,
+        selectedFile: null
+      }
+    case 'filesLoading':
+      return { ...state, filesLoading: action.loading }
+    case 'filesLoaded':
+      return {
+        ...state,
+        workspaceRoot: action.root,
+        filePaths: action.paths ?? state.filePaths,
+        fileGitStatus: action.gitStatus,
+        filesTruncated: action.truncated,
+        filesLoading: false
+      }
+    case 'reviewLoading':
+      return { ...state, reviewLoading: action.loading }
+    case 'reviewLoaded':
+      return { ...state, reviewItems: action.items, reviewLoading: false }
+    case 'toggleReviewItem':
+      return {
+        ...state,
+        reviewItems: state.reviewItems.map((item) =>
+          item.id === action.id
+            ? { ...item, collapsed: !item.collapsed, version: (item.version ?? 0) + 1 }
+            : item
+        )
+      }
+    case 'selectFile':
+      return { ...state, selectedPath: action.path, selectedFile: null }
+    case 'fileLoaded':
+      return { ...state, selectedFile: action.file }
+  }
+}
+
 function getLanguage(path: string): string {
   const extension = path.split('.').pop()?.toLowerCase() ?? ''
   const languages: Record<string, (typeof highlightedLanguages)[number]> = {
@@ -138,6 +232,10 @@ function getLanguage(path: string): string {
 
 function isMarkdown(path: string): boolean {
   return /\.mdx?$/i.test(path)
+}
+
+function getWorkspaceName(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() || path
 }
 
 function CodeWithLineNumbers({
@@ -386,7 +484,10 @@ function FilesPanel({
       </aside>
       <main className="file-viewer" aria-label={selectedPath ?? 'File viewer'}>
         {loading ? <div className="file-empty">Loading files…</div> : null}
-        {!loading && !selectedFile ? <div className="file-empty">Select a file</div> : null}
+        {!loading && paths.length === 0 ? <div className="file-empty">No files in workspace</div> : null}
+        {!loading && paths.length > 0 && !selectedFile ? (
+          <div className="file-empty">Select a file</div>
+        ) : null}
         {selectedFile ? <FilePreview key={selectedFile.path} file={selectedFile} /> : null}
       </main>
     </section>
@@ -394,23 +495,30 @@ function FilesPanel({
 }
 
 function App(): React.JSX.Element {
-  const [mode, setMode] = useState<AppMode>('terminal')
+  const [view, dispatchView] = useReducer(viewReducer, initialViewState)
   const [tabs, setTabs] = useState<TerminalTab[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
-  const [filePaths, setFilePaths] = useState<string[]>([])
-  const [filesLoading, setFilesLoading] = useState(false)
-  const [filesTruncated, setFilesTruncated] = useState(false)
-  const [fileGitStatus, setFileGitStatus] = useState<GitStatusEntry[]>([])
-  const [reviewItems, setReviewItems] = useState<CodeViewItem[]>([])
-  const [reviewLoading, setReviewLoading] = useState(false)
-  const [selectedPath, setSelectedPath] = useState<string | null>(null)
-  const [selectedFile, setSelectedFile] = useState<FileReadResult | null>(null)
+  const {
+    mode,
+    filePaths,
+    filesLoading,
+    filesTruncated,
+    fileGitStatus,
+    reviewItems,
+    reviewLoading,
+    selectedPath,
+    selectedFile,
+    workspaceRoot
+  } = view
   const runtimes = useMemo(() => new Map<string, TerminalRuntime>(), [])
   const containers = useMemo(() => new Map<string, HTMLDivElement>(), [])
   const creating = useRef(false)
-  const loadedFiles = useRef(false)
+  const fileListVersion = useRef<number | undefined>(undefined)
   const shortcutHandlers = useRef({
     closeActiveView: () => {},
+    createTerminal: () => {},
+    openWorkspace: () => {},
+    openWorkspaceInNewWindow: () => {},
     toggleFiles: () => {},
     toggleReview: () => {}
   })
@@ -503,6 +611,19 @@ function App(): React.JSX.Element {
           return false
         }
 
+        if (event.code === 'KeyJ') {
+          event.preventDefault()
+          shortcutHandlers.current.createTerminal()
+          return false
+        }
+
+        if (event.code === 'KeyO') {
+          event.preventDefault()
+          if (event.shiftKey) shortcutHandlers.current.openWorkspaceInNewWindow()
+          else shortcutHandlers.current.openWorkspace()
+          return false
+        }
+
         return true
       })
 
@@ -549,24 +670,26 @@ function App(): React.JSX.Element {
   )
 
   const openFiles = useCallback(async () => {
-    setMode('files')
-    if (loadedFiles.current) return
-
-    loadedFiles.current = true
-    setFilesLoading(true)
+    dispatchView({ type: 'setMode', mode: 'files' })
+    dispatchView({ type: 'filesLoading', loading: true })
     try {
-      const result = await window.api.files.list()
-      setFilePaths(result.paths)
-      setFileGitStatus(result.gitStatus)
-      setFilesTruncated(result.truncated)
+      const result = await window.api.files.list({ knownVersion: fileListVersion.current })
+      fileListVersion.current = result.version
+      dispatchView({
+        type: 'filesLoaded',
+        root: result.root,
+        paths: result.paths,
+        gitStatus: result.gitStatus,
+        truncated: result.truncated
+      })
     } finally {
-      setFilesLoading(false)
+      dispatchView({ type: 'filesLoading', loading: false })
     }
   }, [])
 
   const toggleFiles = useCallback(() => {
     if (mode === 'files') {
-      setMode('terminal')
+      dispatchView({ type: 'setMode', mode: 'terminal' })
       return
     }
 
@@ -574,52 +697,64 @@ function App(): React.JSX.Element {
   }, [mode, openFiles])
 
   const openReview = useCallback(async () => {
-    setMode('review')
-    setReviewLoading(true)
+    dispatchView({ type: 'setMode', mode: 'review' })
+    dispatchView({ type: 'reviewLoading', loading: true })
     try {
       const { patch } = await window.api.review.diff()
       if (!patch.trim()) {
-        setReviewItems([])
+        dispatchView({ type: 'reviewLoaded', items: [] })
         return
       }
 
       const patches = parsePatchFiles(patch, `workspace-${Date.now()}`)
-      setReviewItems(
-        patches.flatMap((parsedPatch, patchIndex) =>
+      dispatchView({
+        type: 'reviewLoaded',
+        items: patches.flatMap((parsedPatch, patchIndex) =>
           parsedPatch.files.map((fileDiff, fileIndex) => ({
             id: `diff:${patchIndex}:${fileIndex}:${fileDiff.name}`,
             type: 'diff' as const,
             fileDiff
           }))
         )
-      )
+      })
     } finally {
-      setReviewLoading(false)
+      dispatchView({ type: 'reviewLoading', loading: false })
     }
   }, [])
 
   const toggleReview = useCallback(() => {
     if (mode === 'review') {
-      setMode('terminal')
+      dispatchView({ type: 'setMode', mode: 'terminal' })
       return
     }
 
     void openReview()
   }, [mode, openReview])
 
+  const resetWorkspaceViews = useCallback((root: string) => {
+    fileListVersion.current = undefined
+    dispatchView({ type: 'setWorkspace', root })
+  }, [])
+
+  const openWorkspace = useCallback(async () => {
+    const result = await window.api.workspace.openFolder()
+    if (!result.canceled) {
+      resetWorkspaceViews(result.root)
+      void createTerminal()
+    }
+  }, [createTerminal, resetWorkspaceViews])
+
+  const openWorkspaceInNewWindow = useCallback(async () => {
+    await window.api.workspace.openFolder({ newWindow: true })
+  }, [])
+
   const toggleReviewItem = useCallback((id: string) => {
-    setReviewItems((current) =>
-      current.map((item) =>
-        item.id === id
-          ? { ...item, collapsed: !item.collapsed, version: (item.version ?? 0) + 1 }
-          : item
-      )
-    )
+    dispatchView({ type: 'toggleReviewItem', id })
   }, [])
 
   const closeActiveView = useCallback(() => {
     if (mode === 'files' || mode === 'review') {
-      setMode('terminal')
+      dispatchView({ type: 'setMode', mode: 'terminal' })
       return
     }
 
@@ -627,14 +762,32 @@ function App(): React.JSX.Element {
   }, [activeId, closeTerminal, mode])
 
   const selectFilePath = useCallback(async (path: string) => {
-    setSelectedPath(path)
+    dispatchView({ type: 'selectFile', path })
     const result = await window.api.files.read(path)
-    setSelectedFile(result)
+    dispatchView({ type: 'fileLoaded', file: result })
   }, [])
 
   useEffect(() => {
-    shortcutHandlers.current = { closeActiveView, toggleFiles, toggleReview }
-  }, [closeActiveView, toggleFiles, toggleReview])
+    shortcutHandlers.current = {
+      closeActiveView,
+      createTerminal,
+      openWorkspace,
+      openWorkspaceInNewWindow,
+      toggleFiles,
+      toggleReview
+    }
+  }, [closeActiveView, createTerminal, openWorkspace, openWorkspaceInNewWindow, toggleFiles, toggleReview])
+
+  useEffect(() => {
+    void window.api.workspace.get().then(({ root, version }) => {
+      fileListVersion.current = version
+      dispatchView({ type: 'setWorkspace', root, version })
+    })
+
+    return window.api.workspace.onChanged(({ root }) => {
+      resetWorkspaceViews(root)
+    })
+  }, [resetWorkspaceViews])
 
   useEffect(() => {
     void createTerminal()
@@ -697,9 +850,22 @@ function App(): React.JSX.Element {
       '$mod+KeyW': (event) => {
         event.preventDefault()
         closeActiveView()
+      },
+      '$mod+KeyJ': (event) => {
+        event.preventDefault()
+        void createTerminal()
+      },
+      '$mod+KeyO': (event) => {
+        if (event.shiftKey) return
+        event.preventDefault()
+        void openWorkspace()
+      },
+      '$mod+Shift+KeyO': (event) => {
+        event.preventDefault()
+        void openWorkspaceInNewWindow()
       }
     })
-  }, [closeActiveView, toggleFiles, toggleReview])
+  }, [closeActiveView, createTerminal, openWorkspace, openWorkspaceInNewWindow, toggleFiles, toggleReview])
 
   return (
     <main className="app-shell">
@@ -710,7 +876,7 @@ function App(): React.JSX.Element {
               <button
                 className="terminal-tab-main"
                 onClick={() => {
-                  setMode('terminal')
+                  dispatchView({ type: 'setMode', mode: 'terminal' })
                   setActiveId(tab.id)
                 }}
                 title={tab.cwd}
@@ -735,10 +901,23 @@ function App(): React.JSX.Element {
           onClick={createTerminal}
           type="button"
           aria-label="New terminal"
+          title="New terminal (Cmd+J)"
         >
           <PlusIcon size={14} weight="regular" />
         </button>
         <div className="topbar-spacer" />
+        {workspaceRoot ? (
+          <button
+            className="topbar-workspace"
+            onClick={openWorkspace}
+            type="button"
+            title={`${workspaceRoot}\nCmd+O: change workspace\nCmd+Shift+O: open workspace in new window`}
+            aria-label="Open workspace"
+          >
+            <FolderOpenIcon size={15} weight="regular" />
+            <span>{getWorkspaceName(workspaceRoot)}</span>
+          </button>
+        ) : null}
         <button
           className={`topbar-file${mode === 'review' ? ' is-active' : ''}`}
           onClick={toggleReview}

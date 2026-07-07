@@ -25,11 +25,24 @@ const api = {
     }
   },
   files: {
-    list: () => ipcRenderer.invoke('files:list'),
+    list: (options?: { knownVersion?: number }) => ipcRenderer.invoke('files:list', options),
     read: (path: string) => ipcRenderer.invoke('files:read', path)
   },
   review: {
     diff: () => ipcRenderer.invoke('review:diff')
+  },
+  workspace: {
+    get: () => ipcRenderer.invoke('workspace:get'),
+    openFolder: (options?: { newWindow?: boolean }) =>
+      ipcRenderer.invoke('workspace:openFolder', options),
+    onChanged: (callback: (payload: { root: string; version: number }) => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        payload: { root: string; version: number }
+      ) => callback(payload)
+      ipcRenderer.on('workspace:changed', listener)
+      return () => ipcRenderer.removeListener('workspace:changed', listener)
+    }
   },
   window: {
     onFullScreen: (callback: (fullscreen: boolean) => void) => {

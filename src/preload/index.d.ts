@@ -21,11 +21,13 @@ export type GitStatusEntry = {
 }
 
 export interface FilesApi {
-  list(): Promise<{
+  list(options?: { knownVersion?: number }): Promise<{
     root: string
-    paths: string[]
+    paths: string[] | null
     gitStatus: GitStatusEntry[]
+    version: number
     truncated: boolean
+    unchanged: boolean
   }>
   read(path: string): Promise<{
     path: string
@@ -43,10 +45,19 @@ export interface WindowApi {
   onFullScreen(callback: (fullscreen: boolean) => void): () => void
 }
 
+export interface WorkspaceApi {
+  get(): Promise<{ root: string; version: number }>
+  openFolder(options?: {
+    newWindow?: boolean
+  }): Promise<{ canceled: true } | { canceled: false; root: string; newWindow: boolean }>
+  onChanged(callback: (payload: { root: string; version: number }) => void): () => void
+}
+
 export interface AppApi {
   terminal: TerminalApi
   files: FilesApi
   review: ReviewApi
+  workspace: WorkspaceApi
   window: WindowApi
 }
 

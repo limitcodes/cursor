@@ -1,6 +1,7 @@
-import { app, shell, BrowserWindow, ipcMain } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
 import { join, relative, sep } from 'path'
 import os from 'os'
+import { watch, type FSWatcher } from 'fs'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { opendir, readFile, stat } from 'fs/promises'
@@ -9,9 +10,17 @@ import icon from '../../resources/icon.png?asset'
 import pty from 'node-pty'
 
 const execFileAsync = promisify(execFile)
-const terminals = new Map<string, pty.IPty>()
-const workspaceRoot = process.cwd()
-const fileListCache = new Map<string, { paths: string[]; createdAt: number }>()
+const terminals = new Map<string, { term: pty.IPty; windowId: number }>()
+const workspaces = new Map<
+  number,
+  {
+    root: string
+    paths: string[]
+    version: number
+    dirty: boolean
+    watcher: FSWatcher | null
+  }
+>()
 const skippedDirectoryNames = new Set([
   '.git',
   '.hg',
@@ -31,7 +40,76 @@ const skippedDirectoryNames = new Set([
 const maxFilePaths = 75000
 const maxTextFileBytes = 1024 * 1024
 
-function createWindow(): void {
+function createWorkspaceState(root = app.getPath('home')): {
+  root: string
+  paths: string[]
+  version: number
+  dirty: boolean
+  watcher: FSWatcher | null
+} {
+  const state = {
+    root,
+    paths: [] as string[],
+    version: 0,
+    dirty: true,
+    watcher: null as FSWatcher | null
+  }
+  watchWorkspace(state)
+  return state
+}
+
+function watchWorkspace(state: { root: string; dirty: boolean; watcher: FSWatcher | null }): void {
+  state.watcher?.close()
+  state.watcher = null
+
+  try {
+    state.watcher = watch(
+      state.root,
+      { recursive: process.platform === 'darwin' || process.platform === 'win32' },
+      () => {
+        state.dirty = true
+      }
+    )
+    state.watcher.on('error', () => {
+      state.dirty = true
+    })
+  } catch {
+    state.dirty = true
+  }
+}
+
+function getWindow(event: Electron.IpcMainInvokeEvent | Electron.IpcMainEvent): BrowserWindow {
+  const window = BrowserWindow.fromWebContents(event.sender)
+  if (!window) throw new Error('Window not found')
+  return window
+}
+
+function getWorkspace(event: Electron.IpcMainInvokeEvent | Electron.IpcMainEvent): {
+  root: string
+  paths: string[]
+  version: number
+  dirty: boolean
+  watcher: FSWatcher | null
+} {
+  const window = getWindow(event)
+  let workspace = workspaces.get(window.id)
+  if (!workspace) {
+    workspace = createWorkspaceState()
+    workspaces.set(window.id, workspace)
+  }
+  return workspace
+}
+
+function setWindowWorkspace(window: BrowserWindow, root: string): void {
+  const previous = workspaces.get(window.id)
+  previous?.watcher?.close()
+
+  const workspace = createWorkspaceState(root)
+  workspaces.set(window.id, workspace)
+  window.webContents.send('workspace:changed', { root, version: workspace.version })
+}
+
+function createWindow(root = app.getPath('home')): void {
   const mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -46,6 +124,20 @@ function createWindow(): void {
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false
+    }
+  })
+
+  workspaces.set(mainWindow.id, createWorkspaceState(root))
+
+  mainWindow.on('closed', () => {
+    const workspace = workspaces.get(mainWindow.id)
+    workspace?.watcher?.close()
+    workspaces.delete(mainWindow.id)
+
+    for (const [id, terminal] of terminals) {
+      if (terminal.windowId !== mainWindow.id) continue
+      terminals.delete(id)
+      terminal.term.kill()
     }
   })
 
@@ -155,9 +247,6 @@ async function getWorkspaceGitStatus(root: string): Promise<GitStatusEntry[]> {
 }
 
 async function scanWorkspacePaths(root: string): Promise<string[]> {
-  const cached = fileListCache.get(root)
-  if (cached && Date.now() - cached.createdAt < 30_000) return cached.paths
-
   const paths: string[] = []
   const pendingDirectories = ['']
 
@@ -200,26 +289,76 @@ async function scanWorkspacePaths(root: string): Promise<string[]> {
   }
 
   paths.sort((a, b) => compareTreePaths(a, b, directoryPaths))
-  fileListCache.set(root, { paths, createdAt: Date.now() })
   return paths
+}
+
+function samePaths(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false
+  for (let index = 0; index < a.length; index += 1) {
+    if (a[index] !== b[index]) return false
+  }
+  return true
+}
+
+function safeJoin(root: string, path: string): string {
+  const absolutePath = join(root, path)
+  const relativePath = relative(root, absolutePath)
+
+  if (relativePath === '..' || relativePath.startsWith(`..${sep}`) || relativePath === '') {
+    throw new Error('Cannot read file outside workspace')
+  }
+
+  return absolutePath
+}
+
+function registerWorkspaceIpc(): void {
+  ipcMain.handle('workspace:get', (event) => {
+    const workspace = getWorkspace(event)
+    return { root: workspace.root, version: workspace.version }
+  })
+
+  ipcMain.handle('workspace:openFolder', async (event, options?: { newWindow?: boolean }) => {
+    const window = getWindow(event)
+    const workspace = getWorkspace(event)
+    const result = await dialog.showOpenDialog(window, {
+      defaultPath: workspace.root,
+      properties: ['openDirectory']
+    })
+
+    if (result.canceled || !result.filePaths[0]) {
+      return { canceled: true as const }
+    }
+
+    const root = result.filePaths[0]
+    if (options?.newWindow) {
+      createWindow(root)
+      return { canceled: false as const, root, newWindow: true }
+    }
+
+    setWindowWorkspace(window, root)
+    return { canceled: false as const, root, newWindow: false }
+  })
 }
 
 function registerTerminalIpc(): void {
   ipcMain.handle(
     'terminal:create',
     (event, options?: { cols?: number; rows?: number; cwd?: string }) => {
+      const window = getWindow(event)
+      const workspace = getWorkspace(event)
       const id = crypto.randomUUID()
+      const cwd = options?.cwd || workspace.root
       const shellPath =
         process.env.SHELL || (process.platform === 'win32' ? 'powershell.exe' : 'zsh')
       const term = pty.spawn(shellPath, [], {
         name: 'xterm-256color',
         cols: options?.cols ?? 120,
         rows: options?.rows ?? 32,
-        cwd: options?.cwd || workspaceRoot,
+        cwd,
         env: { ...process.env, TERM: 'xterm-256color' }
       })
 
-      terminals.set(id, term)
+      terminals.set(id, { term, windowId: window.id })
 
       term.onData((data) => {
         if (!event.sender.isDestroyed()) {
@@ -234,35 +373,36 @@ function registerTerminalIpc(): void {
         }
       })
 
-      return { id, cwd: options?.cwd || workspaceRoot, title: os.userInfo().username }
+      return { id, cwd, title: os.userInfo().username }
     }
   )
 
   ipcMain.on('terminal:write', (_event, payload: { id: string; data: string }) => {
-    terminals.get(payload.id)?.write(payload.data)
+    terminals.get(payload.id)?.term.write(payload.data)
   })
 
   ipcMain.on('terminal:resize', (_event, payload: { id: string; cols: number; rows: number }) => {
-    terminals.get(payload.id)?.resize(Math.max(2, payload.cols), Math.max(1, payload.rows))
+    terminals.get(payload.id)?.term.resize(Math.max(2, payload.cols), Math.max(1, payload.rows))
   })
 
   ipcMain.on('terminal:dispose', (_event, id: string) => {
-    const term = terminals.get(id)
+    const terminal = terminals.get(id)
     terminals.delete(id)
-    term?.kill()
+    terminal?.term.kill()
   })
 }
 
 function registerReviewIpc(): void {
-  ipcMain.handle('review:diff', async () => {
+  ipcMain.handle('review:diff', async (event) => {
+    const { root } = getWorkspace(event)
     try {
       const [{ stdout: trackedDiff }, { stdout: untrackedFiles }] = await Promise.all([
         execFileAsync('git', ['diff', '--no-ext-diff', 'HEAD', '--'], {
-          cwd: workspaceRoot,
+          cwd: root,
           maxBuffer: 1024 * 1024 * 32
         }),
         execFileAsync('git', ['ls-files', '--others', '--exclude-standard'], {
-          cwd: workspaceRoot,
+          cwd: root,
           maxBuffer: 1024 * 1024 * 8
         })
       ])
@@ -276,7 +416,7 @@ function registerReviewIpc(): void {
                 'git',
                 ['diff', '--no-index', '--', '/dev/null', path],
                 {
-                  cwd: workspaceRoot,
+                  cwd: root,
                   maxBuffer: 1024 * 1024 * 8
                 }
               )
@@ -298,21 +438,37 @@ function registerReviewIpc(): void {
 }
 
 function registerFileIpc(): void {
-  ipcMain.handle('files:list', async () => {
-    const [paths, gitStatus] = await Promise.all([
-      scanWorkspacePaths(workspaceRoot),
-      getWorkspaceGitStatus(workspaceRoot)
-    ])
-    return { root: workspaceRoot, paths, gitStatus, truncated: paths.length >= maxFilePaths }
+  ipcMain.handle('files:list', async (event, options?: { knownVersion?: number }) => {
+    const workspace = getWorkspace(event)
+    let pathsChanged = false
+
+    if (workspace.dirty || workspace.paths.length === 0) {
+      const paths = await scanWorkspacePaths(workspace.root)
+      workspace.dirty = false
+
+      if (!samePaths(workspace.paths, paths)) {
+        workspace.paths = paths
+        workspace.version += 1
+        pathsChanged = true
+      }
+    }
+
+    const gitStatus = await getWorkspaceGitStatus(workspace.root)
+    const unchanged = options?.knownVersion === workspace.version && !pathsChanged
+
+    return {
+      root: workspace.root,
+      paths: unchanged ? null : workspace.paths,
+      gitStatus,
+      version: workspace.version,
+      truncated: workspace.paths.length >= maxFilePaths,
+      unchanged
+    }
   })
 
-  ipcMain.handle('files:read', async (_event, path: string) => {
-    const absolutePath = join(workspaceRoot, path)
-    const relativePath = relative(workspaceRoot, absolutePath)
-
-    if (relativePath.startsWith('..') || relativePath === '') {
-      throw new Error('Cannot read file outside workspace')
-    }
+  ipcMain.handle('files:read', async (event, path: string) => {
+    const { root } = getWorkspace(event)
+    const absolutePath = safeJoin(root, path)
 
     const fileStat = await stat(absolutePath)
     if (!fileStat.isFile()) {
@@ -339,6 +495,7 @@ app.whenReady().then(() => {
     optimizer.watchWindowShortcuts(window)
   })
 
+  registerWorkspaceIpc()
   registerTerminalIpc()
   registerFileIpc()
   registerReviewIpc()
@@ -350,8 +507,10 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
-  for (const term of terminals.values()) term.kill()
+  for (const terminal of terminals.values()) terminal.term.kill()
   terminals.clear()
+  for (const workspace of workspaces.values()) workspace.watcher?.close()
+  workspaces.clear()
 
   if (process.platform !== 'darwin') {
     app.quit()

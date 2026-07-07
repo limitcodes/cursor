@@ -151,9 +151,38 @@ body.is-fullscreen .terminal-navbar {
   padding: 0;
 }
 
+.topbar-workspace {
+  display: inline-flex;
+  max-width: min(360px, 34vw);
+  height: 24px;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 6px;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-weak);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  min-width: 0;
+  padding: 0 8px;
+}
+
+.topbar-workspace span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topbar-workspace svg {
+  flex: 0 0 auto;
+}
+
 .terminal-new:hover,
 .topbar-file:hover,
-.topbar-file.is-active {
+.topbar-file.is-active,
+.topbar-workspace:hover {
   background: #202020;
   color: var(--color-text);
 }
