@@ -297,6 +297,11 @@ function createWindow(root = app.getPath('home')): void {
     mainWindow.show()
   })
 
+  mainWindow.on('page-title-updated', (event) => {
+    event.preventDefault()
+    mainWindow.setTitle(appName)
+  })
+
   mainWindow.on('enter-full-screen', () => {
     mainWindow.webContents.send('window:fullscreen', true)
   })

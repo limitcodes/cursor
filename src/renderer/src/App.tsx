@@ -460,11 +460,22 @@ function ReviewPanel({
   )
 }
 
+function terminalIndexForShortcut(event: KeyboardEvent): number | null {
+  if (event.shiftKey || event.altKey) return null
+
+  const codeMatch = event.code.match(/^(?:Digit|Numpad)([1-9])$/)
+  if (codeMatch?.[1]) return Number(codeMatch[1]) - 1
+  if (/^[1-9]$/.test(event.key)) return Number(event.key) - 1
+
+  return null
+}
+
 const keyboardShortcuts = [
   ['Cmd+,', 'Open settings'],
   ['Cmd+O', 'Change workspace in this window'],
   ['Cmd+Shift+O', 'Open workspace in new window'],
   ['Cmd+J', 'New terminal'],
+  ['Cmd+1-9', 'Switch to terminal by position'],
   ['Cmd+G', 'Toggle files'],
   ['Cmd+E', 'Toggle review changes'],
   ['Cmd+W', 'Close active view or terminal'],
@@ -596,6 +607,7 @@ function App(): React.JSX.Element {
     closeSettings: () => {},
     openWorkspace: () => {},
     openWorkspaceInNewWindow: () => {},
+    activateTerminalAtIndex: (_index: number) => {},
     toggleFiles: () => {},
     toggleReview: () => {}
   })
@@ -655,6 +667,17 @@ function App(): React.JSX.Element {
     [fitTerminal, runtimes]
   )
 
+  const activateTerminalAtIndex = useCallback(
+    (index: number) => {
+      const tab = tabs[index]
+      if (!tab) return
+
+      dispatchView({ type: 'setMode', mode: 'terminal' })
+      setActiveId(tab.id)
+    },
+    [tabs]
+  )
+
   const attachTerminal = useCallback(
     (id: string, element: HTMLDivElement | null) => {
       if (!element) {
@@ -708,6 +731,13 @@ function App(): React.JSX.Element {
       term.loadAddon(new WebLinksAddon())
       term.attachCustomKeyEventHandler((event) => {
         if (event.type !== 'keydown' || !(event.metaKey || event.ctrlKey)) return true
+
+        const terminalIndex = terminalIndexForShortcut(event)
+        if (terminalIndex != null) {
+          event.preventDefault()
+          shortcutHandlers.current.activateTerminalAtIndex(terminalIndex)
+          return false
+        }
 
         if (event.metaKey && !event.ctrlKey && !event.altKey) {
           if (event.code === 'ArrowLeft') {
@@ -972,6 +1002,7 @@ function App(): React.JSX.Element {
       openSettings,
       openWorkspace,
       openWorkspaceInNewWindow,
+      activateTerminalAtIndex,
       toggleFiles,
       toggleReview
     }
@@ -982,6 +1013,7 @@ function App(): React.JSX.Element {
     openSettings,
     openWorkspace,
     openWorkspaceInNewWindow,
+    activateTerminalAtIndex,
     toggleFiles,
     toggleReview
   ])
@@ -1070,8 +1102,20 @@ function App(): React.JSX.Element {
     toggleReview
   ])
 
-  const globalKeybindings = useMemo<KeybindingsMap>(
-    () => ({
+  const globalKeybindings = useMemo<KeybindingsMap>(() => {
+    const terminalSwitchKeybindings: KeybindingsMap = {}
+
+    for (let index = 0; index < 9; index += 1) {
+      const switchTerminal = (event: KeyboardEvent) => {
+        event.preventDefault()
+        activateTerminalAtIndex(index)
+      }
+      terminalSwitchKeybindings[`$mod+Digit${index + 1}`] = switchTerminal
+      terminalSwitchKeybindings[`$mod+Numpad${index + 1}`] = switchTerminal
+    }
+
+    return {
+      ...terminalSwitchKeybindings,
       '$mod+KeyG': (event) => {
         event.preventDefault()
         toggleFiles()
@@ -1118,21 +1162,21 @@ function App(): React.JSX.Element {
         openSettings()
       },
       Escape: () => closeSettings()
-    }),
-    [
-      activeId,
-      adjustTerminalFontSize,
-      closeActiveView,
-      closeSettings,
-      createTerminal,
-      openSettings,
-      openWorkspace,
-      openWorkspaceInNewWindow,
-      resetTerminalFontSize,
-      toggleFiles,
-      toggleReview
-    ]
-  )
+    }
+  }, [
+    activeId,
+    activateTerminalAtIndex,
+    adjustTerminalFontSize,
+    closeActiveView,
+    closeSettings,
+    createTerminal,
+    openSettings,
+    openWorkspace,
+    openWorkspaceInNewWindow,
+    resetTerminalFontSize,
+    toggleFiles,
+    toggleReview
+  ])
 
   useEffect(() => tinykeys(window, globalKeybindings), [globalKeybindings])
 
