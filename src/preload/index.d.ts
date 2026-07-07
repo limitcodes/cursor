@@ -39,10 +39,15 @@ export interface ReviewApi {
   diff(): Promise<{ patch: string }>
 }
 
+export interface WindowApi {
+  onFullScreen(callback: (fullscreen: boolean) => void): () => void
+}
+
 export interface AppApi {
   terminal: TerminalApi
   files: FilesApi
   review: ReviewApi
+  window: WindowApi
 }
 
 declare global {

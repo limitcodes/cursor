@@ -36,7 +36,17 @@ button {
   min-width: 0;
   border-bottom: 1px solid #2b2b2b;
   background: #151515;
-  padding: 4px 8px;
+  padding: 4px 8px 4px 76px;
+  -webkit-app-region: drag;
+}
+
+.terminal-navbar button,
+.terminal-tabs {
+  -webkit-app-region: no-drag;
+}
+
+body.is-fullscreen .terminal-navbar {
+  padding-left: 8px;
 }
 
 .terminal-tabs {
@@ -287,16 +297,15 @@ button {
 }
 
 .file-viewer {
+  display: grid;
+  grid-template-rows: 34px minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   background: var(--color-background);
 }
 
 .file-viewer-header {
-  position: sticky;
-  top: 0;
-  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -307,6 +316,12 @@ button {
   color: var(--color-text-weak);
   font-size: 12px;
   padding: 0 10px;
+}
+
+.file-viewer-body {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
 }
 
 .file-viewer-path {

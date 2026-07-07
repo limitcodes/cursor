@@ -251,35 +251,39 @@ function FilePreview({ file }: { file: FileReadResult }): React.JSX.Element {
         ) : null}
       </div>
 
-      {markdown && viewerMode === 'preview' && canRenderMarkdown ? (
-        <Suspense fallback={<div className="file-empty">Rendering markdown…</div>}>
-          <article className="markdown-preview">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{file.content}</ReactMarkdown>
-          </article>
-        </Suspense>
-      ) : null}
+      <div className="file-viewer-body">
+        {markdown && viewerMode === 'preview' && canRenderMarkdown ? (
+          <Suspense fallback={<div className="file-empty">Rendering markdown…</div>}>
+            <article className="markdown-preview">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{file.content}</ReactMarkdown>
+            </article>
+          </Suspense>
+        ) : null}
 
-      {markdown && viewerMode === 'preview' && !canRenderMarkdown ? (
-        <div className="file-empty">Markdown is too large to render. Use Source.</div>
-      ) : null}
+        {markdown && viewerMode === 'preview' && !canRenderMarkdown ? (
+          <div className="file-empty">Markdown is too large to render. Use Source.</div>
+        ) : null}
 
-      {(!markdown || viewerMode === 'source') && highlightState.lines ? (
-        <CodeWithLineNumbers highlightedLines={highlightState.lines} />
-      ) : null}
+        {(!markdown || viewerMode === 'source') && highlightState.lines ? (
+          <CodeWithLineNumbers highlightedLines={highlightState.lines} />
+        ) : null}
 
-      {(!markdown || viewerMode === 'source') && !highlightState.lines && highlightState.loading ? (
-        <div className="file-empty">Highlighting…</div>
-      ) : null}
+        {(!markdown || viewerMode === 'source') &&
+        !highlightState.lines &&
+        highlightState.loading ? (
+          <div className="file-empty">Highlighting…</div>
+        ) : null}
 
-      {(!markdown || viewerMode === 'source') &&
-      !highlightState.lines &&
-      !highlightState.loading ? (
-        <CodeWithLineNumbers content={file.content} />
-      ) : null}
+        {(!markdown || viewerMode === 'source') &&
+        !highlightState.lines &&
+        !highlightState.loading ? (
+          <CodeWithLineNumbers content={file.content} />
+        ) : null}
 
-      {highlightState.failed ? (
-        <div className="file-highlight-warning">Plain text fallback</div>
-      ) : null}
+        {highlightState.failed ? (
+          <div className="file-highlight-warning">Plain text fallback</div>
+        ) : null}
+      </div>
     </>
   )
 }
@@ -672,6 +676,12 @@ function App(): React.JSX.Element {
     const onResize = () => fitActiveTerminal()
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
+  }, [])
+
+  useEffect(() => {
+    return window.api.window.onFullScreen((fullscreen) => {
+      document.body.classList.toggle('is-fullscreen', fullscreen)
+    })
   }, [])
 
   useEffect(() => {

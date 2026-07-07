@@ -30,6 +30,14 @@ const api = {
   },
   review: {
     diff: () => ipcRenderer.invoke('review:diff')
+  },
+  window: {
+    onFullScreen: (callback: (fullscreen: boolean) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, fullscreen: boolean) =>
+        callback(fullscreen)
+      ipcRenderer.on('window:fullscreen', listener)
+      return () => ipcRenderer.removeListener('window:fullscreen', listener)
+    }
   }
 }
 

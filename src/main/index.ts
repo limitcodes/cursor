@@ -39,6 +39,9 @@ function createWindow(): void {
     minHeight: 640,
     show: false,
     autoHideMenuBar: true,
+    ...(process.platform === 'darwin'
+      ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 12, y: 12 } }
+      : {}),
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -48,6 +51,14 @@ function createWindow(): void {
 
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
+  })
+
+  mainWindow.on('enter-full-screen', () => {
+    mainWindow.webContents.send('window:fullscreen', true)
+  })
+
+  mainWindow.on('leave-full-screen', () => {
+    mainWindow.webContents.send('window:fullscreen', false)
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
@@ -70,6 +81,31 @@ function shouldSkipDirectory(name: string, parentRelativePath: string): boolean 
   if (skippedDirectoryNames.has(name)) return true
   if (parentRelativePath === 'node_modules' && name === '.cache') return true
   return false
+}
+
+function compareTreePaths(a: string, b: string, directoryPaths: Set<string>): number {
+  const aParts = a.split('/')
+  const bParts = b.split('/')
+  const maxLength = Math.max(aParts.length, bParts.length)
+
+  for (let index = 0; index < maxLength; index += 1) {
+    const aPart = aParts[index]
+    const bPart = bParts[index]
+    if (aPart === bPart) continue
+    if (aPart == null) return -1
+    if (bPart == null) return 1
+
+    const parent = aParts.slice(0, index).join('/')
+    const aPath = parent ? `${parent}/${aPart}` : aPart
+    const bPath = parent ? `${parent}/${bPart}` : bPart
+    const aIsDirectory = directoryPaths.has(aPath)
+    const bIsDirectory = directoryPaths.has(bPath)
+
+    if (aIsDirectory !== bIsDirectory) return aIsDirectory ? -1 : 1
+    return aPart.localeCompare(bPart)
+  }
+
+  return 0
 }
 
 type GitStatus = 'added' | 'deleted' | 'ignored' | 'modified' | 'renamed' | 'untracked'
@@ -155,7 +191,15 @@ async function scanWorkspacePaths(root: string): Promise<string[]> {
     }
   }
 
-  paths.sort((a, b) => a.localeCompare(b))
+  const directoryPaths = new Set<string>()
+  for (const path of paths) {
+    const parts = path.split('/')
+    for (let index = 1; index < parts.length; index += 1) {
+      directoryPaths.add(parts.slice(0, index).join('/'))
+    }
+  }
+
+  paths.sort((a, b) => compareTreePaths(a, b, directoryPaths))
   fileListCache.set(root, { paths, createdAt: Date.now() })
   return paths
 }
