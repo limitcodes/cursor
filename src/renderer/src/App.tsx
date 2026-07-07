@@ -36,7 +36,10 @@ const highlightedLanguages = [
 ] as const
 
 type ShikiHighlighter = {
-  codeToTokens: (code: string, options: { lang: never; theme: 'github-dark-default' }) => {
+  codeToTokens: (
+    code: string,
+    options: { lang: never; theme: 'github-dark-default' }
+  ) => {
     tokens: HighlightedToken[][]
   }
 }
@@ -45,11 +48,12 @@ let highlighterPromise: Promise<ShikiHighlighter> | null = null
 
 function getHighlighter(): Promise<ShikiHighlighter> {
   if (!highlighterPromise) {
-    highlighterPromise = import('shiki').then(({ createHighlighter }) =>
-      createHighlighter({
-        langs: [...highlightedLanguages],
-        themes: ['github-dark-default']
-      }) as Promise<ShikiHighlighter>
+    highlighterPromise = import('shiki').then(
+      ({ createHighlighter }) =>
+        createHighlighter({
+          langs: [...highlightedLanguages],
+          themes: ['github-dark-default']
+        }) as Promise<ShikiHighlighter>
     )
   }
   return highlighterPromise
@@ -152,21 +156,21 @@ function CodeWithLineNumbers({
 
 function FilePreview({ file }: { file: FileReadResult }): React.JSX.Element {
   const [viewerMode, setViewerMode] = useState<ViewerMode>('preview')
-  const [highlightedLines, setHighlightedLines] = useState<HighlightedToken[][] | null>(null)
-  const [highlighting, setHighlighting] = useState(false)
-  const [highlightFailed, setHighlightFailed] = useState(false)
+  const [highlightState, setHighlightState] = useState<{
+    lines: HighlightedToken[][] | null
+    loading: boolean
+    failed: boolean
+  }>({ lines: null, loading: false, failed: false })
   const markdown = isMarkdown(file.path)
   const canRenderMarkdown = markdown && file.size <= maxRenderedMarkdownBytes
   const canHighlight = file.size <= maxHighlightedBytes
 
   useEffect(() => {
     let canceled = false
-    setHighlightedLines(null)
-    setHighlightFailed(false)
+    setHighlightState({ lines: null, loading: file.kind === 'text' && canHighlight, failed: false })
 
     if (file.kind !== 'text' || !canHighlight) return
 
-    setHighlighting(true)
     void getHighlighter()
       .then((highlighter) =>
         highlighter.codeToTokens(file.content, {
@@ -175,17 +179,17 @@ function FilePreview({ file }: { file: FileReadResult }): React.JSX.Element {
         })
       )
       .then((result) => {
-        if (!canceled) setHighlightedLines(result.tokens as HighlightedToken[][])
+        if (!canceled) {
+          setHighlightState({
+            lines: result.tokens as HighlightedToken[][],
+            loading: false,
+            failed: false
+          })
+        }
       })
       .catch((error) => {
         console.warn('Failed to highlight file', file.path, error)
-        if (!canceled) {
-          setHighlightFailed(true)
-          setHighlightedLines(null)
-        }
-      })
-      .finally(() => {
-        if (!canceled) setHighlighting(false)
+        if (!canceled) setHighlightState({ lines: null, loading: false, failed: true })
       })
 
     return () => {
@@ -236,19 +240,23 @@ function FilePreview({ file }: { file: FileReadResult }): React.JSX.Element {
         <div className="file-empty">Markdown is too large to render. Use Source.</div>
       ) : null}
 
-      {(!markdown || viewerMode === 'source') && highlightedLines ? (
-        <CodeWithLineNumbers highlightedLines={highlightedLines} />
+      {(!markdown || viewerMode === 'source') && highlightState.lines ? (
+        <CodeWithLineNumbers highlightedLines={highlightState.lines} />
       ) : null}
 
-      {(!markdown || viewerMode === 'source') && !highlightedLines && highlighting ? (
+      {(!markdown || viewerMode === 'source') && !highlightState.lines && highlightState.loading ? (
         <div className="file-empty">Highlighting…</div>
       ) : null}
 
-      {(!markdown || viewerMode === 'source') && !highlightedLines && !highlighting ? (
+      {(!markdown || viewerMode === 'source') &&
+      !highlightState.lines &&
+      !highlightState.loading ? (
         <CodeWithLineNumbers content={file.content} />
       ) : null}
 
-      {highlightFailed ? <div className="file-highlight-warning">Plain text fallback</div> : null}
+      {highlightState.failed ? (
+        <div className="file-highlight-warning">Plain text fallback</div>
+      ) : null}
     </>
   )
 }
@@ -308,6 +316,10 @@ function App(): React.JSX.Element {
   const containers = useMemo(() => new Map<string, HTMLDivElement>(), [])
   const creating = useRef(false)
   const loadedFiles = useRef(false)
+  const shortcutHandlers = useRef({
+    closeActiveView: () => {},
+    toggleFiles: () => {}
+  })
 
   const activeTab = useMemo(() => tabs.find((tab) => tab.id === activeId) ?? null, [activeId, tabs])
 
@@ -375,6 +387,23 @@ function App(): React.JSX.Element {
       const fit = new FitAddon()
       term.loadAddon(fit)
       term.loadAddon(new WebLinksAddon())
+      term.attachCustomKeyEventHandler((event) => {
+        if (event.type !== 'keydown' || !(event.metaKey || event.ctrlKey)) return true
+
+        if (event.code === 'KeyG') {
+          event.preventDefault()
+          shortcutHandlers.current.toggleFiles()
+          return false
+        }
+
+        if (event.code === 'KeyW') {
+          event.preventDefault()
+          shortcutHandlers.current.closeActiveView()
+          return false
+        }
+
+        return true
+      })
 
       const created = await window.api.terminal.create({ cols: 120, rows: 32 })
       runtimes.set(created.id, { term, fit })
@@ -434,11 +463,33 @@ function App(): React.JSX.Element {
     }
   }, [])
 
+  const toggleFiles = useCallback(() => {
+    if (mode === 'files') {
+      setMode('terminal')
+      return
+    }
+
+    void openFiles()
+  }, [mode, openFiles])
+
+  const closeActiveView = useCallback(() => {
+    if (mode === 'files') {
+      setMode('terminal')
+      return
+    }
+
+    if (activeId) closeTerminal(activeId)
+  }, [activeId, closeTerminal, mode])
+
   const selectFilePath = useCallback(async (path: string) => {
     setSelectedPath(path)
     const result = await window.api.files.read(path)
     setSelectedFile(result)
   }, [])
+
+  useEffect(() => {
+    shortcutHandlers.current = { closeActiveView, toggleFiles }
+  }, [closeActiveView, toggleFiles])
 
   useEffect(() => {
     void createTerminal()
@@ -486,10 +537,14 @@ function App(): React.JSX.Element {
     return tinykeys(window, {
       '$mod+KeyG': (event) => {
         event.preventDefault()
-        void openFiles()
+        toggleFiles()
+      },
+      '$mod+KeyW': (event) => {
+        event.preventDefault()
+        closeActiveView()
       }
     })
-  }, [openFiles])
+  }, [closeActiveView, toggleFiles])
 
   return (
     <main className="app-shell">
@@ -531,7 +586,7 @@ function App(): React.JSX.Element {
         <div className="topbar-spacer" />
         <button
           className={`topbar-file${mode === 'files' ? ' is-active' : ''}`}
-          onClick={() => void openFiles()}
+          onClick={toggleFiles}
           type="button"
           aria-label="Open files"
           title="Open files (Cmd+G)"
