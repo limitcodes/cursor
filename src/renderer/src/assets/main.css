@@ -97,21 +97,27 @@ button {
 
 .terminal-tab-close {
   position: absolute;
+  top: 50%;
   right: 5px;
   display: grid;
   width: 16px;
   height: 16px;
   place-items: center;
   border-radius: 999px;
-  color: transparent;
+  background: transparent;
+  color: #bdbdbd;
   cursor: pointer;
   line-height: 0;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
 }
 
 .terminal-tab:hover .terminal-tab-close,
 .terminal-tab.is-active:hover .terminal-tab-close {
   background: #242424;
-  color: #bdbdbd;
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .terminal-tab-close:hover {
