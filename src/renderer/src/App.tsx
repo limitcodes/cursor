@@ -11,8 +11,18 @@ import {
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
-import { FileIcon, PlusIcon, TerminalIcon, XIcon } from '@phosphor-icons/react'
+import {
+  CaretDownIcon,
+  CaretRightIcon,
+  FileIcon,
+  GitDiffIcon,
+  PlusIcon,
+  TerminalIcon,
+  XIcon
+} from '@phosphor-icons/react'
 import { tinykeys } from 'tinykeys'
+import { parsePatchFiles, type CodeViewItem } from '@pierre/diffs'
+import { CodeView } from '@pierre/diffs/react'
 import { preparePresortedFileTreeInput, type GitStatusEntry } from '@pierre/trees'
 import { FileTree, useFileTree } from '@pierre/trees/react'
 import remarkGfm from 'remark-gfm'
@@ -59,7 +69,7 @@ function getHighlighter(): Promise<ShikiHighlighter> {
   return highlighterPromise
 }
 
-type AppMode = 'terminal' | 'files'
+type AppMode = 'terminal' | 'files' | 'review'
 
 type TerminalTab = {
   id: string
@@ -85,6 +95,19 @@ type FilesPanelProps = {
 }
 
 type ViewerMode = 'preview' | 'source'
+
+type ReviewSummary = {
+  files: number
+  additions: number
+  deletions: number
+}
+
+type ReviewPanelProps = {
+  items: CodeViewItem[]
+  loading: boolean
+  summary: ReviewSummary
+  onToggleItem: (id: string) => void
+}
 
 type HighlightedToken = {
   content: string
@@ -261,6 +284,70 @@ function FilePreview({ file }: { file: FileReadResult }): React.JSX.Element {
   )
 }
 
+function summarizeReviewItems(items: CodeViewItem[]): ReviewSummary {
+  return items.reduce(
+    (summary, item) => {
+      if (item.type !== 'diff') return summary
+
+      summary.files += 1
+      for (const hunk of item.fileDiff.hunks) {
+        summary.additions += hunk.additionCount
+        summary.deletions += hunk.deletionCount
+      }
+      return summary
+    },
+    { files: 0, additions: 0, deletions: 0 }
+  )
+}
+
+function ReviewPanel({
+  items,
+  loading,
+  summary,
+  onToggleItem
+}: ReviewPanelProps): React.JSX.Element {
+  return (
+    <section className="review-panel" aria-label="Review changes">
+      <div className="review-header">
+        <span>{summary.files} Changes</span>
+        <span className="review-added">+{summary.additions}</span>
+        <span className="review-deleted">-{summary.deletions}</span>
+      </div>
+
+      {loading ? <div className="file-empty">Loading changes…</div> : null}
+      {!loading && items.length === 0 ? <div className="file-empty">No active changes</div> : null}
+      {!loading && items.length > 0 ? (
+        <CodeView
+          items={items}
+          className="review-code-view"
+          options={{
+            theme: { dark: 'pierre-dark', light: 'pierre-light' },
+            themeType: 'dark',
+            preferredHighlighter: 'shiki-js',
+            diffStyle: 'split',
+            stickyHeaders: true,
+            layout: { paddingTop: 12, paddingBottom: 24, gap: 12 }
+          }}
+          renderHeaderPrefix={(item) => (
+            <button
+              className="review-collapse"
+              onClick={() => onToggleItem(item.id)}
+              type="button"
+              aria-label={item.collapsed ? 'Expand file diff' : 'Collapse file diff'}
+            >
+              {item.collapsed ? (
+                <CaretRightIcon size={14} weight="regular" />
+              ) : (
+                <CaretDownIcon size={14} weight="regular" />
+              )}
+            </button>
+          )}
+        />
+      ) : null}
+    </section>
+  )
+}
+
 function FilesPanel({
   paths,
   selectedPath,
@@ -310,6 +397,8 @@ function App(): React.JSX.Element {
   const [filesLoading, setFilesLoading] = useState(false)
   const [filesTruncated, setFilesTruncated] = useState(false)
   const [fileGitStatus, setFileGitStatus] = useState<GitStatusEntry[]>([])
+  const [reviewItems, setReviewItems] = useState<CodeViewItem[]>([])
+  const [reviewLoading, setReviewLoading] = useState(false)
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [selectedFile, setSelectedFile] = useState<FileReadResult | null>(null)
   const runtimes = useMemo(() => new Map<string, TerminalRuntime>(), [])
@@ -318,10 +407,12 @@ function App(): React.JSX.Element {
   const loadedFiles = useRef(false)
   const shortcutHandlers = useRef({
     closeActiveView: () => {},
-    toggleFiles: () => {}
+    toggleFiles: () => {},
+    toggleReview: () => {}
   })
 
   const activeTab = useMemo(() => tabs.find((tab) => tab.id === activeId) ?? null, [activeId, tabs])
+  const reviewSummary = useMemo(() => summarizeReviewItems(reviewItems), [reviewItems])
 
   const fitTerminal = useCallback(
     (id: string) => {
@@ -393,6 +484,12 @@ function App(): React.JSX.Element {
         if (event.code === 'KeyG') {
           event.preventDefault()
           shortcutHandlers.current.toggleFiles()
+          return false
+        }
+
+        if (event.code === 'KeyE') {
+          event.preventDefault()
+          shortcutHandlers.current.toggleReview()
           return false
         }
 
@@ -472,8 +569,52 @@ function App(): React.JSX.Element {
     void openFiles()
   }, [mode, openFiles])
 
+  const openReview = useCallback(async () => {
+    setMode('review')
+    setReviewLoading(true)
+    try {
+      const { patch } = await window.api.review.diff()
+      if (!patch.trim()) {
+        setReviewItems([])
+        return
+      }
+
+      const patches = parsePatchFiles(patch, `workspace-${Date.now()}`)
+      setReviewItems(
+        patches.flatMap((parsedPatch, patchIndex) =>
+          parsedPatch.files.map((fileDiff, fileIndex) => ({
+            id: `diff:${patchIndex}:${fileIndex}:${fileDiff.name}`,
+            type: 'diff' as const,
+            fileDiff
+          }))
+        )
+      )
+    } finally {
+      setReviewLoading(false)
+    }
+  }, [])
+
+  const toggleReview = useCallback(() => {
+    if (mode === 'review') {
+      setMode('terminal')
+      return
+    }
+
+    void openReview()
+  }, [mode, openReview])
+
+  const toggleReviewItem = useCallback((id: string) => {
+    setReviewItems((current) =>
+      current.map((item) =>
+        item.id === id
+          ? { ...item, collapsed: !item.collapsed, version: (item.version ?? 0) + 1 }
+          : item
+      )
+    )
+  }, [])
+
   const closeActiveView = useCallback(() => {
-    if (mode === 'files') {
+    if (mode === 'files' || mode === 'review') {
       setMode('terminal')
       return
     }
@@ -488,8 +629,8 @@ function App(): React.JSX.Element {
   }, [])
 
   useEffect(() => {
-    shortcutHandlers.current = { closeActiveView, toggleFiles }
-  }, [closeActiveView, toggleFiles])
+    shortcutHandlers.current = { closeActiveView, toggleFiles, toggleReview }
+  }, [closeActiveView, toggleFiles, toggleReview])
 
   useEffect(() => {
     void createTerminal()
@@ -539,12 +680,16 @@ function App(): React.JSX.Element {
         event.preventDefault()
         toggleFiles()
       },
+      '$mod+KeyE': (event) => {
+        event.preventDefault()
+        toggleReview()
+      },
       '$mod+KeyW': (event) => {
         event.preventDefault()
         closeActiveView()
       }
     })
-  }, [closeActiveView, toggleFiles])
+  }, [closeActiveView, toggleFiles, toggleReview])
 
   return (
     <main className="app-shell">
@@ -585,6 +730,15 @@ function App(): React.JSX.Element {
         </button>
         <div className="topbar-spacer" />
         <button
+          className={`topbar-file${mode === 'review' ? ' is-active' : ''}`}
+          onClick={toggleReview}
+          type="button"
+          aria-label="Open review"
+          title="Open review (Cmd+E)"
+        >
+          <GitDiffIcon size={16} weight="regular" />
+        </button>
+        <button
           className={`topbar-file${mode === 'files' ? ' is-active' : ''}`}
           onClick={toggleFiles}
           type="button"
@@ -607,6 +761,15 @@ function App(): React.JSX.Element {
           />
         ))}
       </section>
+
+      {mode === 'review' ? (
+        <ReviewPanel
+          items={reviewItems}
+          loading={reviewLoading}
+          summary={reviewSummary}
+          onToggleItem={toggleReviewItem}
+        />
+      ) : null}
 
       {mode === 'files' ? (
         <FilesPanel

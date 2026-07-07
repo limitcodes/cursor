@@ -35,9 +35,14 @@ export interface FilesApi {
   }>
 }
 
+export interface ReviewApi {
+  diff(): Promise<{ patch: string }>
+}
+
 export interface AppApi {
   terminal: TerminalApi
   files: FilesApi
+  review: ReviewApi
 }
 
 declare global {

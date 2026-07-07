@@ -209,6 +209,50 @@ function registerTerminalIpc(): void {
   })
 }
 
+function registerReviewIpc(): void {
+  ipcMain.handle('review:diff', async () => {
+    try {
+      const [{ stdout: trackedDiff }, { stdout: untrackedFiles }] = await Promise.all([
+        execFileAsync('git', ['diff', '--no-ext-diff', 'HEAD', '--'], {
+          cwd: workspaceRoot,
+          maxBuffer: 1024 * 1024 * 32
+        }),
+        execFileAsync('git', ['ls-files', '--others', '--exclude-standard'], {
+          cwd: workspaceRoot,
+          maxBuffer: 1024 * 1024 * 8
+        })
+      ])
+      const untrackedDiffs = await Promise.all(
+        untrackedFiles
+          .split('\n')
+          .filter(Boolean)
+          .map(async (path) => {
+            try {
+              const { stdout } = await execFileAsync(
+                'git',
+                ['diff', '--no-index', '--', '/dev/null', path],
+                {
+                  cwd: workspaceRoot,
+                  maxBuffer: 1024 * 1024 * 8
+                }
+              )
+              return stdout
+            } catch (error) {
+              if (error && typeof error === 'object' && 'stdout' in error) {
+                return String(error.stdout)
+              }
+              return ''
+            }
+          })
+      )
+
+      return { patch: [trackedDiff, ...untrackedDiffs].filter(Boolean).join('\n') }
+    } catch {
+      return { patch: '' }
+    }
+  })
+}
+
 function registerFileIpc(): void {
   ipcMain.handle('files:list', async () => {
     const [paths, gitStatus] = await Promise.all([
@@ -253,6 +297,7 @@ app.whenReady().then(() => {
 
   registerTerminalIpc()
   registerFileIpc()
+  registerReviewIpc()
   createWindow()
 
   app.on('activate', function () {

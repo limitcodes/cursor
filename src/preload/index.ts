@@ -27,6 +27,9 @@ const api = {
   files: {
     list: () => ipcRenderer.invoke('files:list'),
     read: (path: string) => ipcRenderer.invoke('files:read', path)
+  },
+  review: {
+    diff: () => ipcRenderer.invoke('review:diff')
   }
 }
 

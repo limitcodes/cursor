@@ -185,6 +185,65 @@ button {
   background: var(--color-background) !important;
 }
 
+.review-panel {
+  display: grid;
+  grid-template-rows: 34px minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--color-background);
+}
+
+.review-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  border-bottom: 1px solid var(--color-border);
+  background: #151515;
+  color: var(--color-text-weak);
+  font-size: 12px;
+  padding: 0 10px;
+}
+
+.review-added {
+  color: var(--color-success);
+}
+
+.review-deleted {
+  color: var(--color-error);
+}
+
+.review-code-view {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  --diffs-font-family: SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --diffs-font-size: 13px;
+  --diffs-line-height: 1.45;
+}
+
+.review-collapse {
+  display: inline-grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-weak);
+  cursor: pointer;
+  line-height: 0;
+}
+
+.review-collapse svg {
+  transition: transform 120ms ease;
+}
+
+.review-collapse:hover {
+  background: var(--color-background-mute);
+  color: var(--color-text);
+}
+
 .files-panel {
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr);
