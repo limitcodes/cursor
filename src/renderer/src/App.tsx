@@ -35,6 +35,26 @@ const highlightedLanguages = [
   'yaml'
 ] as const
 
+type ShikiHighlighter = {
+  codeToTokens: (code: string, options: { lang: never; theme: 'github-dark-default' }) => {
+    tokens: HighlightedToken[][]
+  }
+}
+
+let highlighterPromise: Promise<ShikiHighlighter> | null = null
+
+function getHighlighter(): Promise<ShikiHighlighter> {
+  if (!highlighterPromise) {
+    highlighterPromise = import('shiki').then(({ createHighlighter }) =>
+      createHighlighter({
+        langs: [...highlightedLanguages],
+        themes: ['github-dark-default']
+      }) as Promise<ShikiHighlighter>
+    )
+  }
+  return highlighterPromise
+}
+
 type AppMode = 'terminal' | 'files'
 
 type TerminalTab = {
@@ -134,6 +154,7 @@ function FilePreview({ file }: { file: FileReadResult }): React.JSX.Element {
   const [viewerMode, setViewerMode] = useState<ViewerMode>('preview')
   const [highlightedLines, setHighlightedLines] = useState<HighlightedToken[][] | null>(null)
   const [highlighting, setHighlighting] = useState(false)
+  const [highlightFailed, setHighlightFailed] = useState(false)
   const markdown = isMarkdown(file.path)
   const canRenderMarkdown = markdown && file.size <= maxRenderedMarkdownBytes
   const canHighlight = file.size <= maxHighlightedBytes
@@ -141,17 +162,12 @@ function FilePreview({ file }: { file: FileReadResult }): React.JSX.Element {
   useEffect(() => {
     let canceled = false
     setHighlightedLines(null)
+    setHighlightFailed(false)
 
     if (file.kind !== 'text' || !canHighlight) return
 
     setHighlighting(true)
-    void import('shiki')
-      .then(({ createHighlighter }) =>
-        createHighlighter({
-          langs: [...highlightedLanguages],
-          themes: ['github-dark-default']
-        })
-      )
+    void getHighlighter()
       .then((highlighter) =>
         highlighter.codeToTokens(file.content, {
           lang: getLanguage(file.path) as never,
@@ -163,7 +179,10 @@ function FilePreview({ file }: { file: FileReadResult }): React.JSX.Element {
       })
       .catch((error) => {
         console.warn('Failed to highlight file', file.path, error)
-        if (!canceled) setHighlightedLines(null)
+        if (!canceled) {
+          setHighlightFailed(true)
+          setHighlightedLines(null)
+        }
       })
       .finally(() => {
         if (!canceled) setHighlighting(false)
@@ -221,11 +240,15 @@ function FilePreview({ file }: { file: FileReadResult }): React.JSX.Element {
         <CodeWithLineNumbers highlightedLines={highlightedLines} />
       ) : null}
 
-      {(!markdown || viewerMode === 'source') && !highlightedLines ? (
-        <CodeWithLineNumbers
-          content={highlighting ? `Highlighting…\n\n${file.content}` : file.content}
-        />
+      {(!markdown || viewerMode === 'source') && !highlightedLines && highlighting ? (
+        <div className="file-empty">Highlighting…</div>
       ) : null}
+
+      {(!markdown || viewerMode === 'source') && !highlightedLines && !highlighting ? (
+        <CodeWithLineNumbers content={file.content} />
+      ) : null}
+
+      {highlightFailed ? <div className="file-highlight-warning">Plain text fallback</div> : null}
     </>
   )
 }
