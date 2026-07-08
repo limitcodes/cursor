@@ -470,6 +470,10 @@ function terminalIndexForShortcut(event: KeyboardEvent): number | null {
   return null
 }
 
+function shellQuotePath(path: string): string {
+  return `'${path.replaceAll("'", "'\\''")}'`
+}
+
 const keyboardShortcuts = [
   ['Cmd+,', 'Open settings'],
   ['Cmd+O', 'Change workspace in this window'],
@@ -959,20 +963,39 @@ function App(): React.JSX.Element {
     await window.api.workspace.openFolder({ newWindow: true })
   }, [])
 
+  const dropFilesIntoTerminal = useCallback(
+    (event: React.DragEvent<HTMLElement>) => {
+      event.preventDefault()
+      if (!activeId) return
+
+      const paths = Array.from(event.dataTransfer.files)
+        .map((file) => window.api.files.getPathForFile(file))
+        .filter((path) => path.length > 0)
+      if (paths.length === 0) return
+
+      window.api.terminal.write(activeId, paths.map(shellQuotePath).join(' '))
+      runtimes.get(activeId)?.term.focus()
+    },
+    [activeId, runtimes]
+  )
+
   const openSettings = useCallback(() => {
-    if (settingsDialogRef.current?.open) {
+    const dialog = settingsDialogRef.current
+    if (!dialog) return
+
+    if (dialog.open) {
       dispatchView({ type: 'setSettingsOpen', open: false })
-      settingsDialogRef.current.close()
+      dialog.close()
       return
     }
 
     dispatchView({ type: 'setSettingsOpen', open: true })
-    settingsDialogRef.current?.showModal()
+    dialog.showModal()
   }, [])
 
   const closeSettings = useCallback(() => {
     dispatchView({ type: 'setSettingsOpen', open: false })
-    settingsDialogRef.current?.close()
+    if (settingsDialogRef.current?.open) settingsDialogRef.current.close()
   }, [])
 
   const toggleReviewItem = useCallback((id: string) => {
@@ -1254,6 +1277,8 @@ function App(): React.JSX.Element {
       <section
         className={`terminal-stage${mode === 'terminal' ? ' is-active' : ''}`}
         aria-label={activeTab?.title ?? 'Terminal'}
+        onDragOver={(event) => event.preventDefault()}
+        onDrop={dropFilesIntoTerminal}
       >
         {tabs.map((tab) => (
           <div

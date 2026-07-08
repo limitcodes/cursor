@@ -35,6 +35,7 @@ export interface FilesApi {
     size: number
     kind: 'text' | 'binary' | 'too-large' | 'directory'
   }>
+  getPathForFile(file: File): string
 }
 
 export interface ReviewApi {

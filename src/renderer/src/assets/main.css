@@ -484,6 +484,15 @@ body.is-fullscreen .terminal-navbar {
   padding: 0;
 }
 
+.settings-dialog:not([open]) {
+  display: none;
+}
+
+.settings-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+
 .settings-dialog::backdrop {
   background: #00000066;
 }
@@ -527,6 +536,8 @@ body.is-fullscreen .terminal-navbar {
 }
 
 .settings-body {
+  flex: 1;
+  min-height: 0;
   overflow: auto;
   padding: 14px 16px 16px;
 }

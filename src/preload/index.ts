@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 
 const api = {
@@ -26,7 +26,8 @@ const api = {
   },
   files: {
     list: (options?: { knownVersion?: number }) => ipcRenderer.invoke('files:list', options),
-    read: (path: string) => ipcRenderer.invoke('files:read', path)
+    read: (path: string) => ipcRenderer.invoke('files:read', path),
+    getPathForFile: (file: File) => webUtils.getPathForFile(file)
   },
   review: {
     diff: () => ipcRenderer.invoke('review:diff')
