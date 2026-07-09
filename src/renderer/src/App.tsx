@@ -632,7 +632,7 @@ function App(): React.JSX.Element {
         // canvas edge when Chromium rounds terminal cell dimensions. The right
         // edge is most sensitive because xterm's fit math can round up by a
         // pixel at high-DPI scales.
-        const cols = Math.max(2, dimensions.cols - 2)
+        const cols = Math.max(2, dimensions.cols - 1)
         const rows = Math.max(1, dimensions.rows - 1)
         runtime.term.resize(cols, rows)
         window.api.terminal.resize(id, cols, rows)
